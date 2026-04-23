@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>美国城市人口与地震活动 | WebGIS实验</title>
+    <!-- ArcGIS API for JavaScript 4.28 稳定版 -->
+    <link rel="stylesheet" href="https://js.arcgis.com/4.28/esri/themes/light/main.css">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body, html { height: 100%; width: 100%; overflow: hidden; font-family: 'Segoe UI', Roboto, system-ui, sans-serif; }
+        /* 页眉 */
+        .header {
+            background: linear-gradient(135deg, #1a2a3a 0%, #0f1a24 100%);
+            color: white;
+            padding: 0 24px;
+            height: 60px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+            z-index: 20;
+        }
+        .header h1 { font-size: 1.25rem; font-weight: 500; }
+        .header h1 small { font-size: 0.7rem; background: rgba(255,255,255,0.2); padding: 2px 10px; border-radius: 20px; margin-left: 10px; font-weight: normal; }
+        .header .desc { font-size: 0.75rem; opacity: 0.8; }
+        /* 主体布局 */
+        .main-layout { display: flex; height: calc(100% - 60px); width: 100%; }
+        /* 地图容器 */
+        .map-container { flex: 1; position: relative; background: #eef2f5; }
+        #viewDiv { width: 100%; height: 100%; }
+        /* 右侧底图库面板 */
+        .basemap-panel {
+            width: 280px;
+            background: rgba(255,255,255,0.96);
+            backdrop-filter: blur(8px);
+            border-left: 1px solid rgba(0,0,0,0.08);
+            display: flex;
+            flex-direction: column;
+            box-shadow: -3px 0 15px rgba(0,0,0,0.05);
+            z-index: 10;
+        }
+        .panel-header { padding: 16px 20px 10px; border-bottom: 1px solid #eef2f5; }
+        .panel-header h3 { font-size: 1.1rem; color: #1e3a5f; font-weight: 600; }
+        .panel-header p { font-size: 0.7rem; color: #6c7e97; margin-top: 4px; }
+        .gallery-div { flex: 1; overflow-y: auto; padding: 16px; }
+        /* 自定义图例（右下角） */
+        .custom-legend {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(255,255,255,0.95);
+            padding: 10px 14px;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+            font-size: 12px;
+            z-index: 1000;
+            pointer-events: none;
+            backdrop-filter: blur(4px);
+            border: 1px solid rgba(0,0,0,0.05);
+            min-width: 170px;
+        }
+        .custom-legend h4 { margin: 0 0 8px 0; font-size: 13px; font-weight: 600; color: #2c3e50; }
+        .legend-item { display: flex; align-items: center; margin-bottom: 6px; }
+        .legend-color { width: 16px; height: 16px; border-radius: 50%; margin-right: 10px; }
+        .legend-color.blue { background: #2c7be5; }
+        .legend-color.orange { background: #f58c4c; }
+        .legend-text { font-size: 12px; color: #333; }
+        /* 调整微件位置 */
+        .esri-search { width: 280px; }
+        @media (max-width: 768px) {
+            .basemap-panel { width: 240px; }
+            .header h1 { font-size: 1rem; }
+            .esri-search { width: 200px; }
+        }
+    </style>
+    <script src="https://js.arcgis.com/4.28/"></script>
+</head>
+<body>
+<div class="header">
+    <div>
+        <h1>🇺🇸 美国城市人口 & 地震活动 <small>专题地图</small></h1>
+        <div class="desc">城市人口 > 50万 | 显著地震 M≥4.5</div>
+    </div>
+</div>
+<div class="main-layout">
+    <div class="map-container">
+        <div id="viewDiv"></div>
+        <!-- 自定义图例（右下角） -->
+        <div class="custom-legend">
+            <h4>🗺️ 图例</h4>
+            <div class="legend-item">
+                <div class="legend-color blue"></div>
+                <span class="legend-text">美国主要城市 (人口>50万)</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color orange"></div>
+                <span class="legend-text">历史地震 (震级 M≥4.5)</span>
+            </div>
+        </div>
+    </div>
+    <div class="basemap-panel">
+        <div class="panel-header"><h3>🗺️ 底图库</h3><p>点击切换底图样式</p ></div>
+        <div class="gallery-div" id="basemapGalleryDiv"></div>
+    </div>
+</div>
+
+<script>
+    require([
+        "esri/Map",
+        "esri/views/MapView",
+        "esri/layers/GraphicsLayer",
+        "esri/Graphic",
+        "esri/geometry/Point",
+        "esri/widgets/BasemapGallery",
+        "esri/widgets/ScaleBar",
+        "esri/widgets/Search",
+        "esri/widgets/LayerList",
+        "esri/widgets/Expand"
+    ], (Map, MapView, GraphicsLayer, Graphic, Point, BasemapGallery, ScaleBar, Search, LayerList, Expand) => {
+        
+        // 创建地图，初始底图为地形图（确保一打开就有底图）
+        const map = new Map({ basemap: "topo-vector" });
+        
+        // ---------- 1. 美国主要城市数据（36个）----------
+        const citiesData = [
+            { name: "New York", state: "New York", pop: 8419000, lng: -74.0060, lat: 40.7128 },
+            { name: "Los Angeles", state: "California", pop: 3980000, lng: -118.2437, lat: 34.0522 },
+            { name: "Chicago", state: "Illinois", pop: 2716000, lng: -87.6298, lat: 41.8781 },
+            { name: "Houston", state: "Texas", pop: 2328000, lng: -95.3698, lat: 29.7604 },
+            { name: "Phoenix", state: "Arizona", pop: 1690000, lng: -112.0740, lat: 33.4484 },
+            { name: "Philadelphia", state: "Pennsylvania", pop: 1584000, lng: -75.1652, lat: 39.9526 },
+            { name: "San Antonio", state: "Texas", pop: 1547000, lng: -98.4936, lat: 29.4241 },
+            { name: "San Diego", state: "California", pop: 1426000, lng: -117.1611, lat: 32.7157 },
+            { name: "Dallas", state: "Texas", pop: 1343000, lng: -96.7970, lat: 32.7767 },
+            { name: "San Jose", state: "California", pop: 1029000, lng: -121.8863, lat: 37.3382 },
+            { name: "Austin", state: "Texas", pop: 964000, lng: -97.7431, lat: 30.2672 },
+            { name: "Jacksonville", state: "Florida", pop: 903000, lng: -81.6557, lat: 30.3322 },
+            { name: "Fort Worth", state: "Texas", pop: 909000, lng: -97.3308, lat: 32.7555 },
+            { name: "Columbus", state: "Ohio", pop: 906000, lng: -82.9988, lat: 39.9612 },
+            { name: "Charlotte", state: "North Carolina", pop: 874000, lng: -80.8431, lat: 35.2271 },
+            { name: "San Francisco", state: "California", pop: 883000, lng: -122.4194, lat: 37.7749 },
+            { name: "Indianapolis", state: "Indiana", pop: 876000, lng: -86.1581, lat: 39.7684 },
+            { name: "Seattle", state: "Washington", pop: 753000, lng: -122.3321, lat: 47.6062 },
+            { name: "Denver", state: "Colorado", pop: 727000, lng: -104.9903, lat: 39.7392 },
+            { name: "Washington", state: "D.C.", pop: 705000, lng: -77.0369, lat: 38.9072 },
+            { name: "Boston", state: "Massachusetts", pop: 694000, lng: -71.0589, lat: 42.3601 },
+            { name: "El Paso", state: "Texas", pop: 682000, lng: -106.4850, lat: 31.7619 },
+            { name: "Nashville", state: "Tennessee", pop: 670000, lng: -86.7816, lat: 36.1627 },
+            { name: "Detroit", state: "Michigan", pop: 670000, lng: -83.0458, lat: 42.3314 },
+            { name: "Oklahoma City", state: "Oklahoma", pop: 655000, lng: -97.5164, lat: 35.4676 },
+            { name: "Portland", state: "Oregon", pop: 654000, lng: -122.6765, lat: 45.5152 },
+            { name: "Las Vegas", state: "Nevada", pop: 651000, lng: -115.1398, lat: 36.1699 },
+            { name: "Memphis", state: "Tennessee", pop: 651000, lng: -90.0490, lat: 35.1495 },
+            { name: "Louisville", state: "Kentucky", pop: 620000, lng: -85.7585, lat: 38.2527 },
+            { name: "Baltimore", state: "Maryland", pop: 602000, lng: -76.6122, lat: 39.2904 },
+            { name: "Milwaukee", state: "Wisconsin", pop: 590000, lng: -87.9065, lat: 43.0389 },
+            { name: "Albuquerque", state: "New Mexico", pop: 560000, lng: -106.6052, lat: 35.0844 },
+            { name: "Tucson", state: "Arizona", pop: 545000, lng: -110.9747, lat: 32.2226 },
+            { name: "Fresno", state: "California", pop: 542000, lng: -119.7871, lat: 36.7378 },
+            { name: "Sacramento", state: "California", pop: 525000, lng: -121.4944, lat: 38.5816 },
+            { name: "Kansas City", state: "Missouri", pop: 508000, lng: -94.5786, lat: 39.0997 },
+            { name: "Mesa", state: "Arizona", pop: 504000, lng: -111.8311, lat: 33.4152 }
+        ];
+        
+        const citiesLayer = new GraphicsLayer({ title: "美国主要城市人口", visible: true });
+        citiesData.forEach(city => {
+            let size = 4 + Math.sqrt(city.pop / 100000) * 1.5;
+            size = Math.min(size, 14);
+            const graphic = new Graphic({
+                geometry: new Point({ longitude: city.lng, latitude: city.lat }),
+                symbol: {
+                    type: "simple-marker",
+                    color: [44, 123, 229, 0.9],   // 蓝色
+                    size: size,
+                    outline: { color: [255,255,255], width: 1.5 }
+                },
+                attributes: { city: city.name, state: city.state, population: city.pop.toLocaleString() },
+                popupTemplate: {
+                    title: "🏙️ {city}",
+                    content: `<p><strong>州/特区:</strong> {state}</p ><p><strong>人口 (2020估算):</strong> {population} 人</p >`
+                }
+            });
+            citiesLayer.add(graphic);
+        });
+        map.add(citiesLayer);
+        
+        // ---------- 2. 历史地震数据（18个）----------
+        const earthquakes = [
+            { mag: 6.9, lng: -122.5, lat: 40.3, year: 2018, name: "北加州地震" },
+            { mag: 7.1, lng: -117.6, lat: 35.8, year: 2019, name: "Ridgecrest地震" },
+            { mag: 6.4, lng: -124.1, lat: 40.5, year: 2021, name: "门多西诺地震" },
+            { mag: 5.8, lng: -119.8, lat: 38.8, year: 2020, name: "内华达地震" },
+            { mag: 6.5, lng: -111.5, lat: 39.2, year: 2020, name: "犹他州地震" },
+            { mag: 5.6, lng: -97.0, lat: 35.5, year: 2016, name: "俄克拉荷马地震" },
+            { mag: 5.8, lng: -98.5, lat: 36.3, year: 2018, name: "堪萨斯地震" },
+            { mag: 4.9, lng: -83.0, lat: 37.2, year: 2020, name: "肯塔基地震" },
+            { mag: 5.1, lng: -76.5, lat: 38.0, year: 2017, name: "弗吉尼亚地震" },
+            { mag: 4.7, lng: -70.8, lat: 44.1, year: 2019, name: "缅因地震" },
+            { mag: 5.6, lng: -105.0, lat: 37.2, year: 2016, name: "科罗拉多地震" },
+            { mag: 5.3, lng: -106.4, lat: 34.8, year: 2021, name: "新墨西哥地震" },
+            { mag: 4.8, lng: -112.1, lat: 40.3, year: 2020, name: "犹他北部地震" },
+            { mag: 6.0, lng: -121.8, lat: 36.4, year: 2017, name: "蒙特利湾地震" },
+            { mag: 5.5, lng: -118.3, lat: 34.1, year: 2019, name: "洛杉矶地震" },
+            { mag: 5.2, lng: -116.3, lat: 33.0, year: 2020, name: "加州帝王谷地震" },
+            { mag: 4.9, lng: -122.9, lat: 45.5, year: 2020, name: "波特兰地区地震" },
+            { mag: 5.0, lng: -123.8, lat: 48.5, year: 2018, name: "温哥华岛地震" }
+        ];
+        
+        const quakeLayer = new GraphicsLayer({ title: "历史地震活动 (M≥4.5)", visible: true });
+        earthquakes.forEach(eq => {
+            let size = 4 + (eq.mag - 4) * 1.2;
+            size = Math.min(size, 13);
+            const graphic = new Graphic({
+                geometry: new Point({ longitude: eq.lng, latitude: eq.lat }),
+                symbol: {
+                    type: "simple-marker",
+                    color: [245, 140, 76, 0.9],   // 橙红色
+                    size: size,
+                    outline: { color: [255,255,200], width: 1 }
+                },
+                attributes: { mag: eq.mag, year: eq.year, name: eq.name },
+                popupTemplate: {
+                    title: "🌋 地震事件",
+                    content: `<p><strong>地点:</strong> ${eq.name}</p ><p><strong>震级:</strong> M${eq.mag}</p ><p><strong>年份:</strong> ${eq.year}</p >`
+                }
+            });
+            quakeLayer.add(graphic);
+        });
+        map.add(quakeLayer);
+        
+        // ---------- 3. 地图视图，中心美国，缩放级别4 ----------
+        const view = new MapView({
+            container: "viewDiv",
+            map: map,
+            center: [-98.58, 39.83],
+            zoom: 4,
+            popup: { dockEnabled: true, dockOptions: { breakpoint: false, position: "top-right" } }
+        });
+        
+        view.when(() => {
+            // 比例尺
+            const scaleBar = new ScaleBar({ view, unit: "dual", style: "ruler" });
+            view.ui.add(scaleBar, "bottom-left");
+            
+            // 搜索框
+            const search = new Search({ view, includeDefaultSources: true });
+            view.ui.add(search, "top-left");
+            
+            // 图层列表（可折叠）
+            const layerList = new LayerList({ view });
+            const listExpand = new Expand({ view, content: layerList, expandIconClass: "esri-icon-layers", expandTooltip: "图层列表" });
+            view.ui.add(listExpand, "top-right");
+            
+            // 底图库（右侧面板）
+            const basemapGallery = new BasemapGallery({ view: view, container: "basemapGalleryDiv" });
+            
+            console.log("地图加载成功，数据已显示");
+        }).catch(err => {
+            console.error("地图视图错误:", err);
+            alert("地图加载失败，请检查网络后刷新页面。");
+        });
+    });
+</script>
+</body>
+</html>
